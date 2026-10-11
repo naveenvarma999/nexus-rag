@@ -1,0 +1,26 @@
+name: Verify backend
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: nexus
+          POSTGRES_PASSWORD: test-only
+          POSTGRES_DB: nexus_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U nexus -d nexus_test"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r backend/requirements.txt
+      - run: PYTHONPATH=backend pytest backend/tests -q
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://nexus:test-only@localhost:5432/nexus_test
+      - run: node --check frontend/app.js

@@ -1,0 +1,44 @@
+x-app: &app
+  build: .
+  env_file: .env
+  restart: unless-stopped
+  depends_on:
+    db:
+      condition: service_healthy
+    migrate:
+      condition: service_completed_successfully
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: nexus
+      POSTGRES_PASSWORD: development-only
+      POSTGRES_DB: nexus
+    volumes: [postgres:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U nexus -d nexus]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    build: .
+    env_file: .env
+    command: [python, -m, app.migrate]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+  api:
+    <<: *app
+    ports: ["127.0.0.1:8000:8000"]
+  email-worker:
+    <<: *app
+    command: [python, -m, app.worker]
+  index-worker:
+    <<: *app
+    command: [python, -m, app.indexer]
+  mailpit:
+    image: axllent/mailpit:v1.27
+    ports: ["127.0.0.1:8025:8025"]
+volumes:
+  postgres:

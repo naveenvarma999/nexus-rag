@@ -1,0 +1,27 @@
+region = "eu-west-2"
+name = "nexus"
+vpc_id = "vpc-REPLACE"
+private_subnet_ids = ["subnet-REPLACE-A", "subnet-REPLACE-B"]
+domain = "nexus.example.com"
+certificate_arn = "arn:aws:acm:eu-west-2:ACCOUNT:certificate/REPLACE"
+hosted_zone_id = "ZREPLACE"
+image_uri = "ACCOUNT.dkr.ecr.eu-west-2.amazonaws.com/nexus@sha256:REPLACE"
+auth_secret_arn = "arn:aws:secretsmanager:eu-west-2:ACCOUNT:secret:nexus-auth-REPLACE"
+google_secret_arn = "arn:aws:secretsmanager:eu-west-2:ACCOUNT:secret:nexus-google-REPLACE"
+database_app_secret_arn = "arn:aws:secretsmanager:eu-west-2:ACCOUNT:secret:nexus-database-app-REPLACE"
+google_client_id = "REPLACE.apps.googleusercontent.com"
+ses_from_email = "noreply@example.com"
+ses_identity_arn = "arn:aws:ses:eu-west-2:ACCOUNT:identity/example.com"
+bedrock_chat_model_id = "REPLACE_WITH_ENABLED_CONVERSE_MODEL_OR_INFERENCE_PROFILE"
+bedrock_model_arns = [
+  "arn:aws:bedrock:eu-west-2::foundation-model/amazon.titan-embed-text-v2:0",
+  "REPLACE_WITH_CHAT_MODEL_OR_PROFILE_AND_DESTINATION_MODEL_ARNS"
+]
+api_count = 0
+worker_count = 0
+
+# Version 2 secrets: signing key map, and restricted worker database roles.
+jwt_signing_keys_secret_arn = "arn:aws:secretsmanager:eu-west-2:ACCOUNT:secret:nexus-jwt-REPLACE"
+jwt_active_kid = "primary"
+database_index_secret_arn = "arn:aws:secretsmanager:eu-west-2:ACCOUNT:secret:nexus-index-db-REPLACE"
+database_mail_secret_arn = "arn:aws:secretsmanager:eu-west-2:ACCOUNT:secret:nexus-mail-db-REPLACE"
