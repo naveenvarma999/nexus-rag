@@ -1,4 +1,6 @@
-# Version 2 system design
+# System design and trade-offs
+
+Why Nexus RAG is built the way it is: trust boundaries, authentication, data isolation, admission control, background workers and retrieval. Each section ends with the limits I accepted.
 
 ## Public request and trust boundaries
 
@@ -16,9 +18,9 @@ flowchart TD
   E --> S[SES]
 ```
 
-The public custom domain terminates TLS at API Gateway. Its default execute-api endpoint is disabled. The ALB accepts traffic only from the VPC-link security group, and API tasks accept traffic only from the ALB. WAF attaches to the ALB: a source-IP budget uses a header overwritten by API Gateway, and managed common rules apply to authentication paths. WAF request sampling is disabled to avoid capturing credentials. The managed rule scope deliberately excludes document ingestion, where arbitrary source text is expected. WAF is an extra filter, not a replacement for application validation. Validate rule false positives in staging.
+The public custom domain terminates TLS at API Gateway. Its default execute-api endpoint is disabled. The ALB accepts traffic only from the VPC-link security group, and API tasks accept traffic only from the ALB. WAF attaches to the ALB: a source-IP budget uses a header overwritten by API Gateway, and managed common rules apply to authentication paths. WAF request sampling is disabled to avoid capturing credentials. The managed rule scope deliberately excludes document ingestion, where arbitrary source text is expected. WAF is an extra filter, not a replacement for application validation. Rule false positives need validating in a staging environment.
 
-The application validates cookie JWTs and checks database session state on each protected request. The gateway is not configured as a cookie JWT authorizer. Source-IP headers are trusted only when `TRUST_GATEWAY=true` behind the restricted private ingress path. Local development trusts the socket peer. VPC-link/ALB/container hops use HTTP; add internal TLS if your policy requires it. RDS connections use certificate-verified TLS.
+The application validates cookie JWTs and checks database session state on each protected request. The gateway is not configured as a cookie JWT authorizer. Source-IP headers are trusted only when `TRUST_GATEWAY=true` behind the restricted private ingress path. Local development trusts the socket peer. VPC-link/ALB/container hops use HTTP; internal TLS can be added if a security policy requires it. RDS connections use certificate-verified TLS.
 
 ## Authentication and sessions
 
@@ -42,7 +44,7 @@ RLS is defense against forgotten filters, not a shield against total API comprom
 
 ## Admission control and outages
 
-Application rate limits now use shared PostgreSQL token buckets: a locked row holds tokens and update time; elapsed database time refills tokens continuously to a maximum capacity. A request consumes one token or receives 429 with Retry-After. Application-host clock differences do not affect production refill calculation. This avoids fixed-window boundary resets, but still permits the configured initial burst. PostgreSQL write throughput and contention must be measured; this is a deliberate baseline instead of adding another critical datastore without evidence it is needed.
+Application rate limits use shared PostgreSQL token buckets: a locked row holds tokens and update time; elapsed database time refills tokens continuously to a maximum capacity. A request consumes one token or receives 429 with Retry-After. Application-host clock differences do not affect production refill calculation. This avoids fixed-window boundary resets, but still permits the configured initial burst. PostgreSQL write throughput and contention must be measured; this is a deliberate baseline instead of adding another critical datastore without evidence it is needed.
 
 | Budget | Capacity and refill |
 |---|---|
@@ -56,7 +58,7 @@ Application rate limits now use shared PostgreSQL token buckets: a locked row ho
 | RAG/ingestion admission | Burst 20/user and 100/global, refilled each minute |
 | Foreground work | Two leases/user and twelve/global |
 
-A token bucket is not an exact rolling-hour maximum; e.g. it allows a capacity burst followed by continuous refill. Use measured abuse/traffic requirements to tune policy. Account lockout can be deliberately triggered by someone who knows an email address; that is a tradeoff in the requested strict five-attempt policy.
+A token bucket is not an exact rolling-hour maximum; e.g. it allows a capacity burst followed by continuous refill. Limits should be tuned against measured traffic and abuse patterns. Account lockout can be deliberately triggered by someone who knows an email address; that is a deliberate trade-off of the strict five-attempt policy.
 
 Provider circuit state is shared by all replicas. Five recorded AWS failures open the circuit for 30 seconds. The next caller claims one 45-second recovery probe; other callers fail fast. A generation counter prevents old in-flight outcomes from closing a newly opened circuit. Success closes it; AWS failure reopens it. Embedded SDK calls have bounded connection/read timeouts and automatic SDK retries disabled. Unexpected response parsing failures do not count as AWS transport/service failures; a claimed probe expires if a caller dies.
 
@@ -78,19 +80,27 @@ stateDiagram-v2
 
 Index workers claim a due document with SKIP LOCKED, commit, then call Bedrock outside a database transaction. A heartbeat extends the five-minute lease before each chunk. Every claim receives a new token. Final publication locks and checks that token, so a worker whose lease was taken over cannot publish duplicate/stale chunks. All chunks publish atomically. Errors retry with exponential delay and jitter up to five attempts; exhaustion marks the document failed and removes the pending raw content. Deleting and uploading again is the user-facing retry action. Monitor pending age, attempts and failed counts; there is no dedicated dead-letter queue service or redrive dashboard.
 
-The mail worker uses the same claim/execute/commit pattern with a 60-second lease and five-attempt bound. Expired messages never send. Payloads are encrypted and cleared after acceptance, expiry or final failure. Claim fencing prevents stale database updates, but cannot unsend a message: a crash after SES accepts and before commit may send the same code twice. Delivery is at-least-once. SES acceptance is not final delivery; configure delivery/bounce/complaint events and operational alerts in your account.
+The mail worker uses the same claim/execute/commit pattern with a 60-second lease and five-attempt bound. Expired messages never send. Payloads are encrypted and cleared after acceptance, expiry or final failure. Claim fencing prevents stale database updates, but cannot unsend a message: a crash after SES accepts and before commit may send the same code twice. Delivery is at-least-once. SES acceptance is not final delivery; delivery, bounce and complaint events plus operational alerts need configuring in SES.
 
 ## Retrieval and data lifecycle
 
 Documents are text/Markdown, limited to 20,000 characters and 100 documents/account. Overlapping chunks are embedded with Titan V2 into 1,024-dimensional vectors. A query retrieves five authorized chunks by cosine distance from pgvector and asks a Converse model for a grounded answer with numbered source excerpts. Document hashes deduplicate ingestion per user. No untrusted document instruction receives executable tools. Answers are rendered as text. This does not guarantee factual accuracy or immunity to prompt injection.
 
-HNSW accelerates search. Filtered approximate retrieval can reduce recall; evaluate your corpus before tuning iterative scans or partitioning. This is semantic retrieval, not a hybrid reranking pipeline. Saved source excerpts remain in history when the source document is removed; users can clear history. Define retention/account-erasure requirements before launch.
+HNSW accelerates search. Filtered approximate retrieval can reduce recall; the corpus should be evaluated before tuning iterative scans or partitioning. This is semantic retrieval, not a hybrid reranking pipeline. Saved source excerpts remain in history when the source document is removed; users can clear history. Define retention/account-erasure requirements before launch.
 
 ## Operations and remaining validation
 
 Request metadata logs include a generated request ID, route template, response status and elapsed time, without query strings, cookies, credentials or document content. The same ID is returned in `X-Request-ID`. This supports correlation, not full distributed tracing. CloudWatch handles logs, gateway metrics and task metrics; alarms include unhealthy API targets and low database storage. Incident notification and queue dashboards still need account setup.
 
-Run daily cleanup for expired auth records, token buckets, processed mail records, stale admission leases and audit events older than 90 days. Schedule it with the API role, not the migration administrator. Auth gate rows remain persistent. Multi-AZ RDS, two API replicas, autoscaling, private networking and deployment rollback improve availability; they do not guarantee an SLO. RPO/RTO are not established until backup/failover exercises run. Versioned upgrade instructions and key rotation are in UPGRADE-V2.md.
+Run daily cleanup for expired auth records, token buckets, processed mail records, stale admission leases and audit events older than 90 days. Schedule it with the API role, not the migration administrator. Auth gate rows remain persistent. Multi-AZ RDS, two API replicas, autoscaling, private networking and deployment rollback improve availability; they do not guarantee an SLO. RPO/RTO are not established until backup/failover exercises run. 
+
+## JWT signing-key rotation
+
+The API reads `JWT_SIGNING_KEYS` as a JSON map of key IDs to secrets, and `JWT_ACTIVE_KID` names the signing key. Rotation is zero-downtime: add the new key to every replica as a verification key, then switch the active key, then remove the old key once the 15-minute access-token lifetime (plus clock-skew margin) has passed. In an emergency a key can be removed immediately, forcing everyone to sign in again. `AUTH_SECRET`, which protects refresh/OTP digests and encrypted email payloads, cannot be rotated seamlessly: rotating it signs everyone out.
+
+## Not implemented
+
+MFA or passkeys, organisation roles and sharing, streaming chat, malware scanning of uploads, cross-region disaster recovery and a full observability platform. Citations are grounded in retrieved text but still need evaluation; see the README roadmap.
 
 ## Primary references
 
